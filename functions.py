@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 from sklearn.metrics.pairwise import cosine_similarity
+from tqdm import tqdm
 
 def create_train_test_masks(ratings, split_ratio=0.8, seed=42):
     """
@@ -95,11 +96,10 @@ def get_movies_recommendations(user, user_reviews, similarity_matrix, neigh_dist
             denominator = np.sum(similarity_matrix[movie_id, N_u])
 
             estimated_ratings[movie_id] = b_u[movie_id] + (numerator / denominator if denominator != 0 else 0)
+
         else:
             estimated_ratings[movie_id] = b_u[movie_id]  # Default to baseline if no neighbors exist
 
-
-    print(f'user {user} done')
     return estimated_ratings
 
 
@@ -109,11 +109,50 @@ def fill_missing_ratings(user_reviews, distance_matrix, neigh_distance):
     with estimated ratings computed using get_movies_recommendations.
     """
     filled_ratings = user_reviews.copy()  # Copy as NumPy array
+    pbar = tqdm(total=user_reviews.shape[0], desc="User Processed")
 
     for user_id in range(user_reviews.shape[0]):  # Iterate over users
         estimated_ratings = get_movies_recommendations(user_id, pd.DataFrame(user_reviews), distance_matrix, neigh_distance)
+
         for movie_id, rating in estimated_ratings.items():
             filled_ratings[user_id, movie_id] = rating  # Replace 0s with estimated ratings
 
+        pbar.update(1)
+
+    pbar.close()
     return pd.DataFrame(filled_ratings, columns=pd.DataFrame(user_reviews).columns, index=pd.DataFrame(user_reviews).index)
 
+
+def test_model(predicted_ratings, R, R_test):
+
+    test_mask = R_test > 0
+    test_error = np.sqrt(((R - predicted_ratings) ** 2 * test_mask).sum().sum() / np.sum(test_mask))
+
+    return test_error
+
+
+def optimal_knn_model(threshold_values, R_rest , R_train, R_val, G):
+
+    best_threshold = None
+    best_error = float("inf") 
+    best_predictions = None
+
+    for threshold in threshold_values:
+        print(f"Testing threshold: {threshold}")
+
+        distance_matrix = Jaccard_matrix(G)  
+        predicted_ratings = fill_missing_ratings(R_train, distance_matrix, threshold)
+        
+        # Compute RMSE
+        error = test_model(predicted_ratings, R_rest, R_val)
+        print(f"RMSE: {error}")
+
+        # Update the best model if this threshold gives a lower error
+        if error < best_error:
+            best_error = error
+            best_threshold = threshold
+            best_predictions = predicted_ratings.copy()
+
+    print(f"\nBest threshold: {best_threshold} with RMSE: {best_error}")
+
+    return best_threshold, best_error, best_predictions
