@@ -2,6 +2,11 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics.pairwise import cosine_similarity
 from tqdm import tqdm
+import numpy as np
+from numpy.linalg import solve
+import tensorflow as tf
+from tensorflow.keras.layers import Embedding, Flatten, Dense, Concatenate, Input
+from tensorflow.keras.models import Model
 
 def create_train_test_masks(ratings, split_ratio=0.8, seed=42):
     """
@@ -42,7 +47,6 @@ def create_train_test_masks(ratings, split_ratio=0.8, seed=42):
         test_matrix[row, col] = ratings[row, col]
 
     return train_matrix, test_matrix
-
 
 
 def Jaccard_matrix(movies):
@@ -96,32 +100,129 @@ def get_movies_recommendations(user, user_reviews, similarity_matrix, neigh_dist
             denominator = np.sum(similarity_matrix[movie_id, N_u])
 
             estimated_ratings[movie_id] = b_u[movie_id] + (numerator / denominator if denominator != 0 else 0)
-
         else:
             estimated_ratings[movie_id] = b_u[movie_id]  # Default to baseline if no neighbors exist
 
+
+    #print(f'user {user} done')
     return estimated_ratings
 
 
-def fill_missing_ratings(user_reviews, distance_matrix, neigh_distance):
+def knn_estimation(user_reviews, distance_matrix, neigh_distance):
     """
     Returns a new user_ratings matrix where missing ratings (0s) are replaced
     with estimated ratings computed using get_movies_recommendations.
     """
     filled_ratings = user_reviews.copy()  # Copy as NumPy array
-    pbar = tqdm(total=user_reviews.shape[0], desc="User Processed")
-
+    pbar = tqdm(total=user_reviews.shape[0], desc='Users Processed:')
     for user_id in range(user_reviews.shape[0]):  # Iterate over users
         estimated_ratings = get_movies_recommendations(user_id, pd.DataFrame(user_reviews), distance_matrix, neigh_distance)
-
         for movie_id, rating in estimated_ratings.items():
             filled_ratings[user_id, movie_id] = rating  # Replace 0s with estimated ratings
-
         pbar.update(1)
-
     pbar.close()
     return pd.DataFrame(filled_ratings, columns=pd.DataFrame(user_reviews).columns, index=pd.DataFrame(user_reviews).index)
 
+def train_latent_model(latent_dim, reg_param, max_iters, R_train, R_val):
+    
+    n_users, n_movies = R_train.shape    
+    
+    # We initialize U and M randomly   
+    U= np.random.rand(n_users, latent_dim)      
+    M = np.random.rand(n_movies, latent_dim)
+
+    best_val_score = 100
+    counter = 0
+    
+    for iteration in range(max_iters):
+        # Solving for U while keeping M fixed
+        for u in range(n_users):
+            relevant_movies = R_train[u, :].nonzero()[0]    # Set of movies rated by user u
+            if len(relevant_movies) > 0:
+                M_subset = M[relevant_movies]               # Extract only relevant movie embeddings
+                R_u = R_train[u, relevant_movies]           
+
+                # Solving the least squares problem
+                U[u] = solve(M_subset.T @ M_subset + reg_param * np.eye(latent_dim), M_subset.T @ R_u)
+
+        # Solving for M while keeping U fixed
+        for m in range(n_movies):
+            relevant_users = R_train[:, m].nonzero()[0]     # Set of users who rated movie m
+            if len(relevant_users) > 0:
+                U_subset = U[relevant_users]                # Extract relevant user embeddings
+                R_m = R_train[relevant_users, m] 
+
+                # Solving least squares problem
+                M[m] = solve(U_subset.T @ U_subset + reg_param * np.eye(latent_dim), U_subset.T @ R_m)
+
+        if iteration % 50 == 0:
+            
+            # Computing RMSE
+            predicted_ratings = U @ M.T
+            train_mask = R_train > 0        
+            val_mask = R_val > 0
+            train_error = np.sqrt(np.sum((R_train - predicted_ratings) ** 2 * train_mask) / np.sum(train_mask))
+            val_error = np.sqrt(np.sum((R_val - predicted_ratings) ** 2 * val_mask) / np.sum(val_mask))
+            print(f"Iteration {iteration}, Train RMSE: {train_error:.4f}, Val RMSE: {val_error:.4f}")
+            if val_error < best_val_score:
+                # Updating best val score
+                best_val_score = val_error
+                counter = 0
+            else:
+                counter += 1
+        
+        if counter == 5:
+            # 25 epochs without val improvements. We stop
+            print('early stopping')
+            break
+        
+    print('Training Finished')
+    return U, M
+
+
+def build_latent_nn(n_users, n_movies, latent_dim=10):
+    """
+    Builds a NN to build latent representations and predict scores.
+    
+    Inputs:
+    - n_users (int): number of users
+    - n_movies (int): number of movies
+    - latent_dim (int): size of embedding space
+    
+    Outputs:
+    - Tensorflow Model
+    """
+    
+    # Input Layers
+    user_input = Input(shape=(1,), name="user_input")
+    movie_input = Input(shape=(1,), name="movie_input")
+
+    # Embedding Layers 
+    user_embedding = Embedding(n_users, latent_dim, name="user_embedding")(user_input)
+    movie_embedding = Embedding(n_movies, latent_dim, name="movie_embedding")(movie_input)
+
+    user_vector = Flatten()(user_embedding)
+    movie_vector = Flatten()(movie_embedding)
+
+    # GMF (Generalized Matrix Factorization) Component
+    gmf_output = tf.keras.layers.multiply([user_vector, movie_vector])  
+
+    # Fully Connected Layers
+    fc_input = Concatenate()([user_vector, movie_vector])
+    fc_hidden = Dense(64, activation='relu')(fc_input)
+    fc_hidden = Dense(32, activation='relu')(fc_hidden)
+    fc_hidden = Dense(16, activation='relu')(fc_hidden)
+
+    fc_output = Concatenate()([gmf_output, fc_hidden])
+
+    # Final prediction layer. We predict a single rating in [0, 1]
+    output = Dense(1, activation='sigmoid', name="output_layer")(fc_output)
+
+    # Build model
+    model = Model(inputs=[user_input, movie_input], outputs=output)
+    model.compile(optimizer='adam', loss='mse', metrics=[tf.keras.metrics.RootMeanSquaredError()])
+
+    return model
 
 def test_model(predicted_ratings, R, R_test):
 
@@ -141,7 +242,7 @@ def optimal_knn_model(threshold_values, R_rest , R_train, R_val, G):
         print(f"Testing threshold: {threshold}")
 
         distance_matrix = Jaccard_matrix(G)  
-        predicted_ratings = fill_missing_ratings(R_train, distance_matrix, threshold)
+        predicted_ratings = knn_estimation(R_train, distance_matrix, threshold)
         
         # Compute RMSE
         error = test_model(predicted_ratings, R_rest, R_val)
@@ -156,3 +257,4 @@ def optimal_knn_model(threshold_values, R_rest , R_train, R_val, G):
     print(f"\nBest threshold: {best_threshold} with RMSE: {best_error}")
 
     return best_threshold, best_error, best_predictions
+
