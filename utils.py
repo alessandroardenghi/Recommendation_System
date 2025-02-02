@@ -161,7 +161,6 @@ def build_latent_nn(n_users, n_movies, latent_dim=10):
     user_vector = Flatten()(user_embedding)
     movie_vector = Flatten()(movie_embedding)
 
-    # GMF (Generalized Matrix Factorization) Component
     gmf_output = tf.keras.layers.multiply([user_vector, movie_vector])  
 
     # Fully Connected Layers
