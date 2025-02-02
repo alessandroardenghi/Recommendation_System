@@ -9,40 +9,22 @@ from tensorflow.keras.layers import Embedding, Flatten, Dense, Concatenate, Inpu
 from tensorflow.keras.models import Model
 
 def create_train_test_masks(ratings, split_ratio=0.8, seed=42):
-    """
-    Creates training and test masks by splitting nonzero ratings in the matrix.
 
-    Parameters:
-    - ratings: np.array (User-Movie Rating Matrix)
-    - split_ratio: float (default 0.8) - fraction of nonzero entries to retain in train mask
-    - seed: int (random seed for reproducibility)
-
-    Returns:
-    - train_matrix: np.array with 80% of ratings, 0 elsewhere
-    - test_matrix: np.array with 20% of ratings, 0 elsewhere
-    """
     np.random.seed(seed)
 
-    # Find indices of all nonzero ratings
-    nonzero_indices = np.argwhere(ratings > 0)  # Get (row, col) pairs
-
-    # Shuffle indices
+    nonzero_indices = np.argwhere(ratings > 0)  
     np.random.shuffle(nonzero_indices)
 
-    # Split indices into training (80%) and test (20%)
     split_idx = int(len(nonzero_indices) * split_ratio)
     train_indices = nonzero_indices[:split_idx]
     test_indices = nonzero_indices[split_idx:]
 
-    # Create copies of the original matrix
-    train_matrix = np.zeros_like(ratings)  # Empty training matrix
-    test_matrix = np.zeros_like(ratings)   # Empty test matrix
+    train_matrix = np.zeros_like(ratings)  
+    test_matrix = np.zeros_like(ratings)   
 
-    # Fill training matrix
     for row, col in train_indices:
         train_matrix[row, col] = ratings[row, col]
 
-    # Fill test matrix
     for row, col in test_indices:
         test_matrix[row, col] = ratings[row, col]
 
@@ -50,15 +32,6 @@ def create_train_test_masks(ratings, split_ratio=0.8, seed=42):
 
 
 def Jaccard_matrix(movies):
-    """
-    Compute the Jaccard distance matrix between movies based on their genres.
-
-    Parameters:
-    - movie_genres: pd.DataFrame (movie_id, genre1, genre2, ...)
-
-    Returns:
-    - similarity_matrix: np.array (n_movies, n_movies)
-    """
 
     A = movies.values[:, np.newaxis]  
     B = movies.values
@@ -101,24 +74,19 @@ def get_movies_recommendations(user, user_reviews, similarity_matrix, neigh_dist
 
             estimated_ratings[movie_id] = b_u[movie_id] + (numerator / denominator if denominator != 0 else 0)
         else:
-            estimated_ratings[movie_id] = b_u[movie_id]  # Default to baseline if no neighbors exist
+            estimated_ratings[movie_id] = b_u[movie_id]  
 
-
-    #print(f'user {user} done')
     return estimated_ratings
 
 
 def knn_estimation(user_reviews, distance_matrix, neigh_distance):
-    """
-    Returns a new user_ratings matrix where missing ratings (0s) are replaced
-    with estimated ratings computed using get_movies_recommendations.
-    """
-    filled_ratings = user_reviews.copy()  # Copy as NumPy array
+
+    filled_ratings = user_reviews.copy() 
     pbar = tqdm(total=user_reviews.shape[0], desc='Users Processed:')
-    for user_id in range(user_reviews.shape[0]):  # Iterate over users
+    for user_id in range(user_reviews.shape[0]):  
         estimated_ratings = get_movies_recommendations(user_id, pd.DataFrame(user_reviews), distance_matrix, neigh_distance)
         for movie_id, rating in estimated_ratings.items():
-            filled_ratings[user_id, movie_id] = rating  # Replace 0s with estimated ratings
+            filled_ratings[user_id, movie_id] = rating  
         pbar.update(1)
     pbar.close()
     return pd.DataFrame(filled_ratings, columns=pd.DataFrame(user_reviews).columns, index=pd.DataFrame(user_reviews).index)
@@ -181,17 +149,6 @@ def train_latent_model(latent_dim, reg_param, max_iters, R_train, R_val):
 
 
 def build_latent_nn(n_users, n_movies, latent_dim=10):
-    """
-    Builds a NN to build latent representations and predict scores.
-    
-    Inputs:
-    - n_users (int): number of users
-    - n_movies (int): number of movies
-    - latent_dim (int): size of embedding space
-    
-    Outputs:
-    - Tensorflow Model
-    """
     
     # Input Layers
     user_input = Input(shape=(1,), name="user_input")
@@ -244,11 +201,9 @@ def optimal_knn_model(threshold_values, R_rest , R_train, R_val, G):
         distance_matrix = Jaccard_matrix(G)  
         predicted_ratings = knn_estimation(R_train, distance_matrix, threshold)
         
-        # Compute RMSE
         error = test_model(predicted_ratings, R_rest, R_val)
         print(f"RMSE: {error}")
 
-        # Update the best model if this threshold gives a lower error
         if error < best_error:
             best_error = error
             best_threshold = threshold
